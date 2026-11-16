@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export LC_ALL=en_US.UTF-8
+
+case "$(uname -s 2>/dev/null || echo Unknown)" in
+  Darwin) export LC_ALL=en_US.UTF-8 2>/dev/null || true ;;
+  *)      export LC_ALL=C.UTF-8 2>/dev/null || export LC_ALL=en_US.UTF-8 2>/dev/null || true ;;
+esac
 
 input=$(cat)
 
@@ -118,7 +122,7 @@ resolve_live_ctx_pct() {
 resolve_session_title() {
   local sid="$1"
   local meta="$HOME/.gemini/antigravity-cli/cache/conversation_metadata.json"
-  local cache="/tmp/agy-title-${sid}"
+  local cache="${TMPDIR:-/tmp}/agy-title-${sid}"
 
   if [[ -f "$cache" && -f "$meta" && ! "$meta" -nt "$cache" ]]; then
     cat "$cache"
@@ -153,12 +157,20 @@ resolve_brain_tasks() {
     awk '
       /^[[:space:]]*[-*][[:space:]]+\[[xX]\]/ { done++; total++ }
       /^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\]/ { total++ }
-      END { if (total > 0) printf "%d/%d", done, total }
+      END { if (total > 0) printf "%d/%d", done+0, total }
     ' "$task_file" 2>/dev/null || true
   fi
 }
 
-# --- Shared Bar Helper ---
+# --- Shared Bar Helper (UTF-8 Safe on BSD & GNU) ---
+repeat_str() {
+  local str="$1" count="$2" out="" i
+  for (( i=0; i<count; i++ )); do
+    out+="$str"
+  done
+  printf '%s' "$out"
+}
+
 make_bar() {
   local pct_int="$1"
   local color="$2"
@@ -169,8 +181,8 @@ make_bar() {
   (( pct_int > 0 && filled == 0 )) && filled=1
   local empty=$(( width - filled ))
   local f_str e_str
-  f_str=$(printf "%${filled}s" | tr ' ' '█')
-  e_str=$(printf "%${empty}s" | tr ' ' '·')
+  f_str=$(repeat_str "█" "$filled")
+  e_str=$(repeat_str "·" "$empty")
   printf "${color}[%s${DIM}%s${RESET}${color}]" "$f_str" "$e_str"
 }
 
@@ -308,10 +320,10 @@ right_block="${seg_wk}${SEP}${seg_5h}${SEP}${seg_ctx}"
 
 tty_cols() {
   local tty="$1" dev sz c
-  [[ -z "$tty" || "$tty" == "??" || "$tty" == "-" ]] && return 1
+  [[ -z "$tty" || "$tty" == "?" || "$tty" == "??" || "$tty" == "-" ]] && return 1
   for dev in "/dev/$tty" "/dev/tty$tty"; do
     if [[ -c "$dev" ]]; then
-      sz=$(stty -f "$dev" size 2>/dev/null || true)
+      sz=$(stty size < "$dev" 2>/dev/null || true)
       c=${sz#* }
       if [[ "$c" =~ ^[0-9]+$ ]] && (( c > 0 )); then
         echo "$c"
@@ -328,25 +340,26 @@ get_cols() {
     return
   fi
 
-  local tty stat args c fallback_c=""
-  while read -r tty stat args; do
-    [[ -z "${tty:-}" || "$tty" == "??" || "$tty" == "-" ]] && continue
-    if c=$(tty_cols "$tty"); then
-      if [[ "${stat:-}" == *"+"* ]]; then
-        if [[ "${args:-}" == *"agy"* || "${args:-}" == *"gemini"* || "${args:-}" == *"node"* || "${args:-}" == *"bun"* ]]; then
-          echo "$c"
-          return
-        fi
-        [[ -z "$fallback_c" ]] && fallback_c="$c"
-      fi
-      [[ -z "$fallback_c" ]] && fallback_c="$c"
-    fi
-  done < <(ps -u "${UID:-$(id -u)}" -o tty=,stat=,args= 2>/dev/null || true)
+  case "${OSTYPE:-}" in
+    msys*|cygwin*)
+      echo "${COLUMNS:-140}"
+      return
+      ;;
+  esac
 
-  if [[ -n "$fallback_c" ]]; then
-    echo "$fallback_c"
-    return
-  fi
+  local pid="${PPID:-}" info parent_pid tty c depth=0
+  while [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] && (( pid > 1 && depth < 10 )); do
+    info=$(ps -p "$pid" -o ppid=,tty= 2>/dev/null || true)
+    [[ -z "$info" ]] && break
+    read -r parent_pid tty <<< "$info"
+    if c=$(tty_cols "$tty"); then
+      echo "$c"
+      return
+    fi
+    pid="$parent_pid"
+    depth=$(( depth + 1 ))
+  done
+
   echo "${COLUMNS:-140}"
 }
 
@@ -359,8 +372,7 @@ visible_len() {
 cols=$(get_cols)
 left_len=$(visible_len "$left_block")
 right_len=$(visible_len "$right_block")
-avail=$cols
-pad=$(( avail - left_len - right_len ))
+pad=$(( cols - left_len - right_len ))
 
 if (( pad >= 2 )); then
   spacer=$(printf "%${pad}s")
