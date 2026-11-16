@@ -26,22 +26,16 @@ RESET='\033[0m'
 
 # --- Single-Pass JSON Extraction ---
 IFS=$'\t' read -r \
-  term_cols raw_sid payload_title model_id model_name effort \
+  term_cols raw_sid payload_title transcript_path artifact_count \
+  model_id model_name effort \
   g_wk g_5h a_wk p_wk p_5h \
-  ctx_pct cycle_mode live_status subagents tasks < <(
+  ctx_pct ctx_size cycle_mode live_status sub_active sub_total < <(
   echo "$input" | jq -r '[
-    (.terminal.columns // .terminal_width // .dimensions.columns // .viewport.width // .columns // .width // 0),
-    (
-      .session_id // .sessionId // .conversation_id // .conversationId //
-      (if (.session | type) == "object" then (.session.id // .session.session_id // .session.conversation_id // "-")
-       elif (.session | type) == "string" then .session
-       else "-" end)
-    ),
-    (
-      if (.session | type) == "object" then (.session.name // .session.title // .session.Title // "-")
-      else (.session_name // .session_title // .custom_title // .title // .Title // "-")
-      end
-    ),
+    (.terminal_width // .terminal.columns // .dimensions.columns // .viewport.width // .columns // .width // 0),
+    (.conversation_id // .session_id // "-"),
+    (.conversation_title // .session_title // .title // "-"),
+    (.transcript_path // "-"),
+    (.artifact_count // 0),
     (if (.model | type) == "object" then (.model.id // "-") else "-" end),
     (if (.model | type) == "object" then (.model.display_name // .model.name // .model.id // "default") else (.model // "default") end),
     (if (.model | type) == "object" then (.model.effort // "-") else "-" end),
@@ -56,29 +50,71 @@ IFS=$'\t' read -r \
        then ((.context_window.total_input_tokens * 100) / .context_window.context_window_size | floor)
        else 0 end)
     ),
+    (.context_window.context_window_size // 1048576),
     (.cycle_mode // .permission_mode // .mode // "-"),
     (if (.agent_state | type) == "object" then (.agent_state.state // .agent_state.status // "-") else (.agent_state // .status // .state // "-") end),
     (
-      if (.subagents | type) == "array" then (.subagents | length)
-      elif (.subagents | type) == "object" then (.subagents.active // .subagents.running // .subagents.count // 0)
+      if (.subagents | type) == "array" then
+        ([.subagents[] | select(.status == "running" or .status == "working" or .status == "in_progress" or .status == "active")] | length)
+      elif (.subagents | type) == "object" then (.subagents.active // .subagents.running // 0)
       elif (.subagents | type) == "number" then .subagents
       else 0 end
     ),
     (
-      if (.tasks | type) == "array" then
-        (([.tasks[] | select(.status == "completed" or .completed == true)] | length | tostring) + "/" + (.tasks | length | tostring))
-      elif (.tasks | type) == "object" then
-        (((.tasks.completed // 0) | tostring) + "/" + ((.tasks.total // 0) | tostring))
-      elif (.task_count | type) == "object" then
-        (((.task_count.completed // 0) | tostring) + "/" + ((.task_count.total // 0) | tostring))
-      elif (.task_count | type) == "number" then
-        (.task_count | tostring)
-      else "0/0" end
+      if (.subagents | type) == "array" then (.subagents | length)
+      elif (.subagents | type) == "object" then (.subagents.total // .subagents.count // 0)
+      elif (.subagents | type) == "number" then .subagents
+      else 0 end
     )
   ] | map(tostring | gsub("[\t\r\n]+"; " ")) | @tsv'
 )
 
-# --- Resolve Session Title from conversation_metadata.json ---
+# --- Resolve Brain Directory ---
+resolve_brain_dir() {
+  local sid="$1"
+  local tpath="$2"
+  local candidate
+
+  for candidate in \
+    "$HOME/.gemini/antigravity-cli/brain/${sid}" \
+    "${tpath%%/.system_generated/*}" \
+    "$HOME/.gemini/antigravity/brain/${sid}"; do
+    if [[ -n "$candidate" && "$candidate" != "-" && -d "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return
+    fi
+  done
+}
+
+brain_dir=$(resolve_brain_dir "$raw_sid" "$transcript_path")
+
+# --- Live Context Usage from transcript.jsonl ---
+resolve_live_ctx_pct() {
+  local bdir="$1"
+  local tpath="$2"
+  local max_tokens="$3"
+  local log_file=""
+
+  if [[ -n "$bdir" && -f "${bdir}/.system_generated/logs/transcript.jsonl" ]]; then
+    log_file="${bdir}/.system_generated/logs/transcript.jsonl"
+  elif [[ "$tpath" != "-" && -f "$tpath" ]]; then
+    log_file="$tpath"
+  fi
+
+  [[ -z "$log_file" || ! "$max_tokens" =~ ^[0-9]+$ || "$max_tokens" -le 0 ]] && return
+
+  local used_tokens
+  used_tokens=$(tail -n 30 "$log_file" 2>/dev/null | jq -R '
+    fromjson? | select(type == "object" and (.input_tokens != null or .cache_read_tokens != null)) |
+    ((.input_tokens // 0) + (.cache_read_tokens // 0) + (.output_tokens // 0))
+  ' 2>/dev/null | tail -n 1 || true)
+
+  if [[ "$used_tokens" =~ ^[0-9]+$ ]] && (( used_tokens > 0 )); then
+    echo $(( used_tokens * 100 / max_tokens ))
+  fi
+}
+
+# --- Fallback Session Title Lookup ---
 resolve_session_title() {
   local sid="$1"
   local meta="$HOME/.gemini/antigravity-cli/cache/conversation_metadata.json"
@@ -107,6 +143,19 @@ resolve_session_title() {
 
   printf '%s' "$found" > "$cache"
   printf '%s' "$found"
+}
+
+# --- Resolve Brain Tasks (task.md checkboxes) ---
+resolve_brain_tasks() {
+  local bdir="$1"
+  local task_file="${bdir}/task.md"
+  if [[ -n "$bdir" && -f "$task_file" ]]; then
+    awk '
+      /^[[:space:]]*[-*][[:space:]]+\[[xX]\]/ { done++; total++ }
+      /^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\]/ { total++ }
+      END { if (total > 0) printf "%d/%d", done, total }
+    ' "$task_file" 2>/dev/null || true
+  fi
 }
 
 # --- Shared Bar Helper ---
@@ -176,18 +225,23 @@ case "$status_lc" in
   *)                                seg_status="${C_STAT_WORK}${live_status}${RESET}" ;;
 esac
 
-# 5. Subagents
-if [[ "$subagents" =~ ^[0-9]+$ ]] && (( subagents > 0 )); then
-  seg_sub="${C_SUB}Sub ${subagents}${RESET}"
+# 5. Subagents (active/total)
+if [[ "$sub_active" =~ ^[0-9]+$ ]] && (( sub_active > 0 )); then
+  seg_sub="${C_SUB}Sub ${sub_active}/${sub_total}${RESET}"
+elif [[ "$sub_total" =~ ^[0-9]+$ ]] && (( sub_total > 0 )); then
+  seg_sub="${DIM}Sub 0/${sub_total}${RESET}"
 else
   seg_sub="${DIM}Sub 0${RESET}"
 fi
 
-# 6. Tasks
-if [[ "$tasks" == "0/0" || "$tasks" == "0" || "$tasks" == "-" ]]; then
-  seg_tasks="${DIM}Task ${tasks}${RESET}"
+# 6. Tasks (from brain task.md, falling back to artifact_count)
+brain_tasks=$(resolve_brain_tasks "$brain_dir")
+if [[ -n "$brain_tasks" ]]; then
+  seg_tasks="${C_TASK}Task ${brain_tasks}${RESET}"
+elif [[ "$artifact_count" =~ ^[0-9]+$ ]] && (( artifact_count > 0 )); then
+  seg_tasks="${C_TASK}Art ${artifact_count}${RESET}"
 else
-  seg_tasks="${C_TASK}Task ${tasks}${RESET}"
+  seg_tasks="${DIM}Task 0/0${RESET}"
 fi
 
 # ================= RIGHT CLUSTER (ALL USAGE DATA) =================
@@ -228,9 +282,14 @@ fmt_quota_bar() {
 seg_wk=$(fmt_quota_bar "Wk" "$wk_frac")
 seg_5h=$(fmt_quota_bar "5h" "$h5_frac")
 
-# 9. Context Window
+# 9. Context Window (prefer live transcript.jsonl count when newer than stdin)
 pct_int=${ctx_pct%.*}
 pct_int=${pct_int:-0}
+live_pct=$(resolve_live_ctx_pct "$brain_dir" "$transcript_path" "$ctx_size")
+if [[ "${live_pct:-}" =~ ^[0-9]+$ ]] && (( live_pct > pct_int )); then
+  pct_int=$live_pct
+fi
+
 if (( pct_int >= 80 )); then
   ctx_color="$RED"
 elif (( pct_int >= 60 )); then
