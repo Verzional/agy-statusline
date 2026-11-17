@@ -162,7 +162,15 @@ resolve_brain_tasks() {
   fi
 }
 
-# --- Shared Bar Helper (UTF-8 Safe on BSD & GNU) ---
+# --- Text & Bar Helpers (UTF-8 Safe on BSD & GNU) ---
+truncate_label() {
+  local text="$1" max="$2"
+  awk -v s="$text" -v m="$max" 'BEGIN {
+    if (length(s) > m) printf "%s…", substr(s, 1, m - 1);
+    else printf "%s", s;
+  }'
+}
+
 repeat_str() {
   local str="$1" count="$2" out="" i
   for (( i=0; i<count; i++ )); do
@@ -186,9 +194,9 @@ make_bar() {
   printf "${color}[%s${DIM}%s${RESET}${color}]" "$f_str" "$e_str"
 }
 
-# ================= LEFT CLUSTER (AGENT & EXECUTION) =================
+# ================= LEFT SEGMENTS =================
 
-# 1. Session Name
+# 1. Session Name (capped at 18 chars)
 session_label=""
 if [[ "$payload_title" != "-" && -n "$payload_title" && "$payload_title" != "$raw_sid" ]]; then
   session_label="$payload_title"
@@ -197,14 +205,15 @@ elif [[ "$raw_sid" != "-" && -n "$raw_sid" ]]; then
 fi
 
 if [[ -n "$session_label" ]]; then
-  seg_session="${C_SESSION}${session_label}${RESET}"
+  session_capped=$(truncate_label "$session_label" 18)
+  seg_session="${C_SESSION}${session_capped}${RESET}"
 elif [[ "$raw_sid" != "-" && -n "$raw_sid" ]]; then
   seg_session="${DIM}${raw_sid:0:8}${RESET}"
 else
   seg_session="${DIM}--${RESET}"
 fi
 
-# 2. Model Name & Effort
+# 2. Model Variants (Full, Vendor-Stripped, and Abbreviated Effort)
 if [[ "$effort" != "-" && -n "$effort" ]]; then
   effort_cap=$(printf '%s' "$effort" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')
   model_lc=$(printf '%s' "$model_name" | tr '[:upper:]' '[:lower:]')
@@ -213,7 +222,14 @@ if [[ "$effort" != "-" && -n "$effort" ]]; then
     model_name="${model_name} (${effort_cap})"
   fi
 fi
-seg_model="${C_MODEL}${model_name}${RESET}"
+
+short_model=$(printf '%s' "$model_name" | sed -E 's/^(Gemini[[:space:]]+[0-9]+(\.[0-9]+)?[[:space:]]+|Gemini[[:space:]]+|Claude[[:space:]]+|OpenAI[[:space:]]+)//')
+[[ -z "$short_model" ]] && short_model="$model_name"
+mini_model=$(printf '%s' "$short_model" | sed -E 's/\(([A-Za-z])[A-Za-z]*\)/(\1)/')
+
+seg_model_full="${C_MODEL}${model_name}${RESET}"
+seg_model_short="${C_MODEL}${short_model}${RESET}"
+seg_model_mini="${C_MODEL}${mini_model}${RESET}"
 
 # 3. Mode
 mode_lc=$(printf '%s' "$cycle_mode" | tr '[:upper:]' '[:lower:]')
@@ -238,7 +254,9 @@ case "$status_lc" in
 esac
 
 # 5. Subagents (active/total)
+has_active_sub=0
 if [[ "$sub_active" =~ ^[0-9]+$ ]] && (( sub_active > 0 )); then
+  has_active_sub=1
   seg_sub="${C_SUB}Sub ${sub_active}/${sub_total}${RESET}"
 elif [[ "$sub_total" =~ ^[0-9]+$ ]] && (( sub_total > 0 )); then
   seg_sub="${DIM}Sub 0/${sub_total}${RESET}"
@@ -256,7 +274,7 @@ else
   seg_tasks="${DIM}Task 0/0${RESET}"
 fi
 
-# ================= RIGHT CLUSTER (ALL USAGE DATA) =================
+# ================= RIGHT SEGMENTS =================
 
 full_model_lc=$(printf '%s %s' "$model_id" "$model_name" | tr '[:upper:]' '[:lower:]')
 if [[ "$full_model_lc" == *"claude"* || "$full_model_lc" == *"gpt"* ]]; then
@@ -270,31 +288,53 @@ else
   h5_frac="$g_5h"
 fi
 
-fmt_quota_bar() {
-  local label="$1"
-  local frac="$2"
-  if [[ "$frac" == "-" || -z "$frac" ]]; then
-    printf "${DIM}%s [······] --${RESET}" "$label"
-    return
-  fi
-  local pct pct_int color="$GREEN"
-  pct=$(awk -v f="$frac" 'BEGIN { printf "%.2f", f * 100 }')
-  pct_int=${pct%.*}
+quota_color() {
+  local pct_int="$1"
   if (( pct_int <= 10 )); then
-    color="$RED"
+    printf '%s' "$RED"
   elif (( pct_int <= 30 )); then
-    color="$YELLOW"
+    printf '%s' "$YELLOW"
+  else
+    printf '%s' "$GREEN"
   fi
-  local bar
-  bar=$(make_bar "$pct_int" "$color")
-  printf "${color}%s %b %s%%${RESET}" "$label" "$bar" "$pct"
 }
 
-# 7 & 8. Weekly & 5-Hour Quotas
-seg_wk=$(fmt_quota_bar "Wk" "$wk_frac")
-seg_5h=$(fmt_quota_bar "5h" "$h5_frac")
+fmt_quota_tier() {
+  local label="$1" frac="$2" mode="$3"
+  if [[ "$frac" == "-" || -z "$frac" ]]; then
+    case "$mode" in
+      bar) printf "${DIM}%s [······] --${RESET}" "$label" ;;
+      *)   printf "${DIM}%s --${RESET}" "$label" ;;
+    esac
+    return
+  fi
 
-# 9. Context Window (prefer live transcript.jsonl count when newer than stdin)
+  local pct_dec pct_int color
+  pct_dec=$(awk -v f="$frac" 'BEGIN { printf "%.2f", f * 100 }')
+  pct_int=$(awk -v f="$frac" 'BEGIN { printf "%.0f", f * 100 }')
+  color=$(quota_color "$pct_int")
+
+  case "$mode" in
+    bar)
+      local bar
+      bar=$(make_bar "$pct_int" "$color")
+      printf "${color}%s %b %s%%${RESET}" "$label" "$bar" "$pct_dec"
+      ;;
+    dec)
+      printf "${color}%s %s%%${RESET}" "$label" "$pct_dec"
+      ;;
+    int)
+      printf "${color}%s %s%%${RESET}" "$label" "$pct_int"
+      ;;
+  esac
+}
+
+wk_int=""
+h5_int=""
+[[ "$wk_frac" != "-" && -n "$wk_frac" ]] && wk_int=$(awk -v f="$wk_frac" 'BEGIN { printf "%.0f", f * 100 }')
+[[ "$h5_frac" != "-" && -n "$h5_frac" ]] && h5_int=$(awk -v f="$h5_frac" 'BEGIN { printf "%.0f", f * 100 }')
+
+# Context Window (prefer live transcript.jsonl count when newer than stdin)
 pct_int=${ctx_pct%.*}
 pct_int=${pct_int:-0}
 live_pct=$(resolve_live_ctx_pct "$brain_dir" "$transcript_path" "$ctx_size")
@@ -310,13 +350,31 @@ else
   ctx_color="$GREEN"
 fi
 ctx_bar=$(make_bar "$pct_int" "$ctx_color")
-seg_ctx="${ctx_color}Ctx ${ctx_bar} ${pct_int}%${RESET}"
 
-# ================= ASSEMBLE & ALIGN =================
+seg_ctx_bar="${ctx_color}Ctx ${ctx_bar} ${pct_int}%${RESET}"
+seg_ctx_num="${ctx_color}Ctx ${pct_int}%${RESET}"
+
+# Emergency single critical metric (lowest quota <= 20%, otherwise Ctx)
+if [[ -n "$h5_int" ]] && (( h5_int <= 20 )) && { [[ -z "$wk_int" ]] || (( h5_int <= wk_int )); }; then
+  seg_danger=$(fmt_quota_tier "5h" "$h5_frac" "int")
+elif [[ -n "$wk_int" ]] && (( wk_int <= 20 )); then
+  seg_danger=$(fmt_quota_tier "Wk" "$wk_frac" "int")
+else
+  seg_danger="$seg_ctx_num"
+fi
+
+# ================= RESPONSIVE SELECTION & ALIGNMENT =================
 
 SEP=" ${DIM}│${RESET} "
-left_block="${seg_session}${SEP}${seg_model}${SEP}${seg_mode}${SEP}${seg_status}${SEP}${seg_sub}${SEP}${seg_tasks}"
-right_block="${seg_wk}${SEP}${seg_5h}${SEP}${seg_ctx}"
+
+left_full="${seg_session}${SEP}${seg_model_full}${SEP}${seg_mode}${SEP}${seg_status}${SEP}${seg_sub}${SEP}${seg_tasks}"
+left_split_sub="${seg_model_short}${SEP}${seg_mode}${SEP}${seg_status}${SEP}${seg_sub}"
+left_split="${seg_model_short}${SEP}${seg_mode}${SEP}${seg_status}"
+left_sidebar="${seg_model_mini}${SEP}${seg_status}"
+
+right_full="$(fmt_quota_tier "Wk" "$wk_frac" "bar")${SEP}$(fmt_quota_tier "5h" "$h5_frac" "bar")${SEP}${seg_ctx_bar}"
+right_dec="$(fmt_quota_tier "Wk" "$wk_frac" "dec")${SEP}$(fmt_quota_tier "5h" "$h5_frac" "dec")${SEP}${seg_ctx_num}"
+right_int="$(fmt_quota_tier "Wk" "$wk_frac" "int")${SEP}$(fmt_quota_tier "5h" "$h5_frac" "int")${SEP}${seg_ctx_num}"
 
 tty_cols() {
   local tty="$1" dev sz c
@@ -370,8 +428,36 @@ visible_len() {
 }
 
 cols=$(get_cols)
-left_len=$(visible_len "$left_block")
-right_len=$(visible_len "$right_block")
+
+# Evaluate tiers from widest to narrowest until left + right + 2 <= cols
+candidates_left=("$left_full" "$left_full")
+candidates_right=("$right_full" "$right_dec")
+
+if (( has_active_sub == 1 )); then
+  candidates_left+=("$left_split_sub")
+  candidates_right+=("$right_dec")
+fi
+
+candidates_left+=("$left_split" "$left_sidebar" "$left_sidebar" "$seg_status")
+candidates_right+=("$right_dec" "$right_int" "$seg_danger" "$seg_danger")
+
+chosen_left="$seg_status"
+chosen_right="$seg_danger"
+
+for (( i=0; i<${#candidates_left[@]}; i++ )); do
+  l_cand="${candidates_left[$i]}"
+  r_cand="${candidates_right[$i]}"
+  l_len=$(visible_len "$l_cand")
+  r_len=$(visible_len "$r_cand")
+  if (( l_len + r_len + 2 <= cols )); then
+    chosen_left="$l_cand"
+    chosen_right="$r_cand"
+    break
+  fi
+done
+
+left_len=$(visible_len "$chosen_left")
+right_len=$(visible_len "$chosen_right")
 pad=$(( cols - left_len - right_len ))
 
 if (( pad >= 2 )); then
@@ -380,4 +466,4 @@ else
   spacer="  ${DIM}│${RESET}  "
 fi
 
-printf "%b%b%b\n" "$left_block" "$spacer" "$right_block"
+printf "%b%b%b\n" "$chosen_left" "$spacer" "$chosen_right"
