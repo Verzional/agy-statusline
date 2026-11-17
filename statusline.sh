@@ -1,85 +1,107 @@
 #!/usr/bin/env bash
 set -euo pipefail
+shopt -s extglob nocasematch
 
-case "$(uname -s 2>/dev/null || echo Unknown)" in
-  Darwin) export LC_ALL=en_US.UTF-8 2>/dev/null || true ;;
-  *)      export LC_ALL=C.UTF-8 2>/dev/null || export LC_ALL=en_US.UTF-8 2>/dev/null || true ;;
+case "${OSTYPE:-}" in
+  darwin*) export LC_ALL=en_US.UTF-8 2>/dev/null || true ;;
+  *)       export LC_ALL=C.UTF-8 2>/dev/null || export LC_ALL=en_US.UTF-8 2>/dev/null || true ;;
 esac
 
-input=$(cat)
+IFS= read -rd '' input < /dev/stdin || true
 
-# --- ANSI Colors (Distinct Per Segment) ---
-C_SESSION='\033[38;5;141m'   # Lavender
-C_MODEL='\033[38;5;210m'     # Coral
-C_MODE_PLAN='\033[38;5;117m' # Sky
-C_MODE_EDIT='\033[38;5;221m' # Warm Gold
-C_MODE_AUTO='\033[38;5;212m' # Pink
-C_MODE_ASK='\033[38;5;156m'  # Lime
-C_STAT_IDLE='\033[38;5;114m' # Mint
-C_STAT_WORK='\033[38;5;208m' # Tangerine
-C_STAT_TOOL='\033[38;5;80m'  # Turquoise
-C_STAT_REV='\033[38;5;176m'  # Orchid
-C_SUB='\033[38;5;81m'        # Electric Cyan
-C_TASK='\033[38;5;229m'      # Warm Cream
+# --- ANSI Colors (Raw ESC via $'...' for zero-%b formatting) ---
+C_SESSION=$'\033[38;5;141m'   # Lavender
+C_MODEL=$'\033[38;5;210m'     # Coral
+C_MODE_PLAN=$'\033[38;5;117m' # Sky
+C_MODE_EDIT=$'\033[38;5;221m' # Warm Gold
+C_MODE_AUTO=$'\033[38;5;212m' # Pink
+C_MODE_ASK=$'\033[38;5;156m'  # Lime
+C_STAT_IDLE=$'\033[38;5;114m' # Mint
+C_STAT_WORK=$'\033[38;5;208m' # Tangerine
+C_STAT_TOOL=$'\033[38;5;80m'  # Turquoise
+C_STAT_REV=$'\033[38;5;176m'  # Orchid
+C_SUB=$'\033[38;5;81m'        # Electric Cyan
+C_TASK=$'\033[38;5;229m'      # Warm Cream
 
-GREEN='\033[32m'
-YELLOW='\033[33m'
-RED='\033[31m'
-DIM='\033[2m'
-RESET='\033[0m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+RED=$'\033[31m'
+DIM=$'\033[2m'
+RESET=$'\033[0m'
 
-# --- Single-Pass JSON Extraction ---
+# --- Single-Pass JSON Extraction & Quota Pre-Computation ---
 IFS=$'\t' read -r \
   term_cols raw_sid payload_title transcript_path artifact_count \
-  model_id model_name effort \
-  g_wk g_5h a_wk p_wk p_5h \
+  model_name effort \
+  wk_dec wk_int h5_dec h5_int \
   ctx_pct ctx_size cycle_mode live_status sub_active sub_total < <(
-  echo "$input" | jq -r '[
-    (.terminal_width // .terminal.columns // .dimensions.columns // .viewport.width // .columns // .width // 0),
-    (.conversation_id // .session_id // "-"),
-    (.conversation_title // .session_title // .title // "-"),
-    (.transcript_path // "-"),
-    (.artifact_count // 0),
-    (if (.model | type) == "object" then (.model.id // "-") else "-" end),
-    (if (.model | type) == "object" then (.model.display_name // .model.name // .model.id // "default") else (.model // "default") end),
-    (if (.model | type) == "object" then (.model.effort // "-") else "-" end),
-    (.quota["gemini-weekly"].remaining_fraction // "-"),
-    (.quota["gemini-5h"].remaining_fraction // "-"),
-    (.quota["gemini-argon-wtu-weekly"].remaining_fraction // "-"),
-    (.quota["3p-weekly"].remaining_fraction // "-"),
-    (.quota["3p-5h"].remaining_fraction // "-"),
-    (
-      .context_window.used_percentage //
-      (if ((.context_window.total_input_tokens // 0) > 0 and (.context_window.context_window_size // 0) > 0)
-       then ((.context_window.total_input_tokens * 100) / .context_window.context_window_size | floor)
-       else 0 end)
-    ),
-    (.context_window.context_window_size // 1048576),
-    (.cycle_mode // .permission_mode // .mode // "-"),
-    (if (.agent_state | type) == "object" then (.agent_state.state // .agent_state.status // "-") else (.agent_state // .status // .state // "-") end),
-    (
-      if (.subagents | type) == "array" then
-        ([.subagents[] | select(.status == "running" or .status == "working" or .status == "in_progress" or .status == "active")] | length)
-      elif (.subagents | type) == "object" then (.subagents.active // .subagents.running // 0)
-      elif (.subagents | type) == "number" then .subagents
-      else 0 end
-    ),
-    (
-      if (.subagents | type) == "array" then (.subagents | length)
-      elif (.subagents | type) == "object" then (.subagents.total // .subagents.count // 0)
-      elif (.subagents | type) == "number" then .subagents
-      else 0 end
-    )
-  ] | map(tostring | gsub("[\t\r\n]+"; " ")) | @tsv'
+  printf '%s' "$input" | jq -r '
+    def fmt_dec:
+      if . == null or . == "-" then "-"
+      else
+        ((. * 10000 | round) / 100 | tostring) as $s |
+        if ($s | test("\\.")) then
+          if ($s | test("\\.[0-9]$")) then $s + "0" else $s end
+        else $s + ".00" end
+      end;
+    def fmt_int:
+      if . == null or . == "-" then "-"
+      else (. * 100 | round | tostring) end;
+
+    (if (.model | type) == "object" then (.model.id // "-") else "-" end) as $mid |
+    (if (.model | type) == "object" then (.model.display_name // .model.name // .model.id // "default") else (.model // "default") end) as $mname |
+    (($mid + " " + $mname) | ascii_downcase) as $mlc |
+    (if ($mlc | contains("claude") or contains("gpt")) then .quota["3p-weekly"].remaining_fraction
+     elif ($mlc | contains("argon")) then .quota["gemini-argon-wtu-weekly"].remaining_fraction
+     else .quota["gemini-weekly"].remaining_fraction end) as $wk |
+    (if ($mlc | contains("claude") or contains("gpt")) then .quota["3p-5h"].remaining_fraction
+     else .quota["gemini-5h"].remaining_fraction end) as $h5 |
+
+    [
+      (.terminal_width // .terminal.columns // .dimensions.columns // .viewport.width // .columns // .width // 0),
+      (.conversation_id // .session_id // "-"),
+      (.conversation_title // .session_title // .title // "-"),
+      (.transcript_path // "-"),
+      (.artifact_count // 0),
+      $mname,
+      (if (.model | type) == "object" then (.model.effort // "-") else "-" end),
+      ($wk | fmt_dec),
+      ($wk | fmt_int),
+      ($h5 | fmt_dec),
+      ($h5 | fmt_int),
+      (
+        .context_window.used_percentage //
+        (if ((.context_window.total_input_tokens // 0) > 0 and (.context_window.context_window_size // 0) > 0)
+         then ((.context_window.total_input_tokens * 100) / .context_window.context_window_size | floor)
+         else 0 end)
+      ),
+      (.context_window.context_window_size // 1048576),
+      (.cycle_mode // .permission_mode // .mode // "-"),
+      (if (.agent_state | type) == "object" then (.agent_state.state // .agent_state.status // "-") else (.agent_state // .status // .state // "-") end),
+      (
+        if (.subagents | type) == "array" then
+          ([.subagents[] | select(.status == "running" or .status == "working" or .status == "in_progress" or .status == "active")] | length)
+        elif (.subagents | type) == "object" then (.subagents.active // .subagents.running // 0)
+        elif (.subagents | type) == "number" then .subagents
+        else 0 end
+      ),
+      (
+        if (.subagents | type) == "array" then (.subagents | length)
+        elif (.subagents | type) == "object" then (.subagents.total // .subagents.count // 0)
+        elif (.subagents | type) == "number" then .subagents
+        else 0 end
+      )
+    ] | map(tostring | gsub("[\t\r\n]+"; " ")) | @tsv
+  '
 )
 
 # --- Resolve Brain Directory ---
 resolve_brain_dir() {
-  local sid="$1"
-  local tpath="$2"
-  local candidate
+  local sid="$1" tpath="$2" candidate
+  local tpath_cli="${tpath/\/.gemini\/antigravity\//\/.gemini\/antigravity-cli\/}"
 
   for candidate in \
+    "${tpath_cli%%/.system_generated/*}" \
     "$HOME/.gemini/antigravity-cli/brain/${sid}" \
     "${tpath%%/.system_generated/*}" \
     "$HOME/.gemini/antigravity/brain/${sid}"; do
@@ -92,11 +114,9 @@ resolve_brain_dir() {
 
 brain_dir=$(resolve_brain_dir "$raw_sid" "$transcript_path")
 
-# --- Live Context Usage from transcript.jsonl ---
+# --- Live Context Usage (Cached by transcript mtime:size) ---
 resolve_live_ctx_pct() {
-  local bdir="$1"
-  local tpath="$2"
-  local max_tokens="$3"
+  local bdir="$1" tpath="$2" max_tokens="$3" sid="$4"
   local log_file=""
 
   if [[ -n "$bdir" && -f "${bdir}/.system_generated/logs/transcript.jsonl" ]]; then
@@ -107,14 +127,32 @@ resolve_live_ctx_pct() {
 
   [[ -z "$log_file" || ! "$max_tokens" =~ ^[0-9]+$ || "$max_tokens" -le 0 ]] && return
 
+  local stat_sig=""
+  case "${OSTYPE:-}" in
+    darwin*) stat_sig=$(stat -f '%m:%z' "$log_file" 2>/dev/null || true) ;;
+    *)       stat_sig=$(stat -c '%Y:%s' "$log_file" 2>/dev/null || true) ;;
+  esac
+
+  local cache="${TMPDIR:-/tmp}/agy-ctx-${sid}"
+  if [[ -n "$stat_sig" && -f "$cache" ]]; then
+    local cached_sig cached_pct
+    IFS=' ' read -r cached_sig cached_pct < "$cache" || true
+    if [[ "$cached_sig" == "$stat_sig" && "$cached_pct" =~ ^[0-9]+$ ]]; then
+      printf '%s' "$cached_pct"
+      return
+    fi
+  fi
+
   local used_tokens
-  used_tokens=$(tail -n 30 "$log_file" 2>/dev/null | jq -R '
+  used_tokens=$(tail -n 120 "$log_file" 2>/dev/null | jq -R '
     fromjson? | select(type == "object" and (.input_tokens != null or .cache_read_tokens != null)) |
     ((.input_tokens // 0) + (.cache_read_tokens // 0) + (.output_tokens // 0))
   ' 2>/dev/null | tail -n 1 || true)
 
   if [[ "$used_tokens" =~ ^[0-9]+$ ]] && (( used_tokens > 0 )); then
-    echo $(( used_tokens * 100 / max_tokens ))
+    local computed=$(( used_tokens * 100 / max_tokens ))
+    [[ -n "$stat_sig" ]] && printf '%s %s' "$stat_sig" "$computed" > "$cache"
+    printf '%s' "$computed"
   fi
 }
 
@@ -125,7 +163,8 @@ resolve_session_title() {
   local cache="${TMPDIR:-/tmp}/agy-title-${sid}"
 
   if [[ -f "$cache" && -f "$meta" && ! "$meta" -nt "$cache" ]]; then
-    cat "$cache"
+    IFS= read -rd '' cached_title < "$cache" || true
+    printf '%s' "$cached_title"
     return
   fi
 
@@ -149,54 +188,39 @@ resolve_session_title() {
   printf '%s' "$found"
 }
 
-# --- Resolve Brain Tasks (task.md checkboxes) ---
+# --- Pure-Bash Brain Task Counter (task.md checkboxes) ---
 resolve_brain_tasks() {
-  local bdir="$1"
-  local task_file="${bdir}/task.md"
-  if [[ -n "$bdir" && -f "$task_file" ]]; then
-    awk '
-      /^[[:space:]]*[-*][[:space:]]+\[[xX]\]/ { done++; total++ }
-      /^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\]/ { total++ }
-      END { if (total > 0) printf "%d/%d", done+0, total }
-    ' "$task_file" 2>/dev/null || true
-  fi
+  local task_file="${1}/task.md"
+  [[ -z "$1" || ! -f "$task_file" ]] && return
+
+  local done=0 total=0 line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      *([-*[:space:]])\[[xX]\]*) done=$((done + 1)); total=$((total + 1)) ;;
+      *([-*[:space:]])\[\ \]*)   total=$((total + 1)) ;;
+    esac
+  done < "$task_file"
+
+  (( total > 0 )) && printf '%d/%d' "$done" "$total"
 }
 
-# --- Text & Bar Helpers (UTF-8 Safe on BSD & GNU) ---
-truncate_label() {
-  local text="$1" max="$2"
-  awk -v s="$text" -v m="$max" 'BEGIN {
-    if (length(s) > m) printf "%s…", substr(s, 1, m - 1);
-    else printf "%s", s;
-  }'
-}
-
-repeat_str() {
-  local str="$1" count="$2" out="" i
-  for (( i=0; i<count; i++ )); do
-    out+="$str"
-  done
-  printf '%s' "$out"
-}
-
+# --- Pure-Bash UTF-8 Bar Builder ---
 make_bar() {
-  local pct_int="$1"
-  local color="$2"
-  local width=6
+  local pct_int="$1" color="$2" width=6
   (( pct_int < 0 )) && pct_int=0
   (( pct_int > 100 )) && pct_int=100
   local filled=$(( pct_int * width / 100 ))
   (( pct_int > 0 && filled == 0 )) && filled=1
   local empty=$(( width - filled ))
-  local f_str e_str
-  f_str=$(repeat_str "█" "$filled")
-  e_str=$(repeat_str "·" "$empty")
-  printf "${color}[%s${DIM}%s${RESET}${color}]" "$f_str" "$e_str"
+  local f_str="" e_str="" i
+  for (( i=0; i<filled; i++ )); do f_str+="█"; done
+  for (( i=0; i<empty; i++ )); do e_str+="·"; done
+  printf '%s[%s%s%s%s]' "$color" "$f_str" "$DIM" "$e_str" "$RESET$color"
 }
 
 # ================= LEFT SEGMENTS =================
 
-# 1. Session Name (capped at 18 chars)
+# 1. Session Name (capped at 18 chars in pure Bash)
 session_label=""
 if [[ "$payload_title" != "-" && -n "$payload_title" && "$payload_title" != "$raw_sid" ]]; then
   session_label="$payload_title"
@@ -205,35 +229,48 @@ elif [[ "$raw_sid" != "-" && -n "$raw_sid" ]]; then
 fi
 
 if [[ -n "$session_label" ]]; then
-  session_capped=$(truncate_label "$session_label" 18)
-  seg_session="${C_SESSION}${session_capped}${RESET}"
+  if (( ${#session_label} > 18 )); then
+    session_label="${session_label:0:17}…"
+  fi
+  seg_session="${C_SESSION}${session_label}${RESET}"
 elif [[ "$raw_sid" != "-" && -n "$raw_sid" ]]; then
   seg_session="${DIM}${raw_sid:0:8}${RESET}"
 else
   seg_session="${DIM}--${RESET}"
 fi
 
-# 2. Model Variants (Full, Vendor-Stripped, and Abbreviated Effort)
-if [[ "$effort" != "-" && -n "$effort" ]]; then
-  effort_cap=$(printf '%s' "$effort" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')
-  model_lc=$(printf '%s' "$model_name" | tr '[:upper:]' '[:lower:]')
-  effort_lc=$(printf '%s' "$effort" | tr '[:upper:]' '[:lower:]')
-  if [[ "$model_lc" != *"(${effort_lc})"* ]]; then
-    model_name="${model_name} (${effort_cap})"
-  fi
+# 2. Model Variants (Pure Bash)
+if [[ "$effort" != "-" && -n "$effort" && "$model_name" != *"(${effort})"* ]]; then
+  case "$effort" in
+    low)    effort_cap="Low" ;;
+    medium) effort_cap="Medium" ;;
+    high)   effort_cap="High" ;;
+    none)   effort_cap="None" ;;
+    *)      effort_cap="$effort" ;;
+  esac
+  model_name="${model_name} (${effort_cap})"
 fi
 
-short_model=$(printf '%s' "$model_name" | sed -E 's/^(Gemini[[:space:]]+[0-9]+(\.[0-9]+)?[[:space:]]+|Gemini[[:space:]]+|Claude[[:space:]]+|OpenAI[[:space:]]+)//')
+short_model="$model_name"
+case "$short_model" in
+  Gemini\ [0-9]*\ *) short_model="${short_model#Gemini [0-9]* }" ;;
+  Gemini\ *)         short_model="${short_model#Gemini }" ;;
+  Claude\ *)         short_model="${short_model#Claude }" ;;
+  OpenAI\ *)         short_model="${short_model#OpenAI }" ;;
+esac
 [[ -z "$short_model" ]] && short_model="$model_name"
-mini_model=$(printf '%s' "$short_model" | sed -E 's/\(([A-Za-z])[A-Za-z]*\)/(\1)/')
+
+mini_model="$short_model"
+if [[ "$mini_model" =~ ^(.*)\(([A-Za-z])[A-Za-z]*\)$ ]]; then
+  mini_model="${BASH_REMATCH[1]}(${BASH_REMATCH[2]})"
+fi
 
 seg_model_full="${C_MODEL}${model_name}${RESET}"
 seg_model_short="${C_MODEL}${short_model}${RESET}"
 seg_model_mini="${C_MODEL}${mini_model}${RESET}"
 
-# 3. Mode
-mode_lc=$(printf '%s' "$cycle_mode" | tr '[:upper:]' '[:lower:]')
-case "$mode_lc" in
+# 3. Mode (nocasematch active)
+case "$cycle_mode" in
   plan)                          seg_mode="${C_MODE_PLAN}Plan${RESET}" ;;
   accept-edits|acceptedits|edit) seg_mode="${C_MODE_EDIT}Edits${RESET}" ;;
   auto|yolo|bypass*)             seg_mode="${C_MODE_AUTO}Auto${RESET}" ;;
@@ -242,9 +279,8 @@ case "$mode_lc" in
   *)                             seg_mode="${C_MODE_PLAN}${cycle_mode}${RESET}" ;;
 esac
 
-# 4. Status
-status_lc=$(printf '%s' "$live_status" | tr '[:upper:]' '[:lower:]')
-case "$status_lc" in
+# 4. Status (nocasematch active)
+case "$live_status" in
   idle|ready)                       seg_status="${C_STAT_IDLE}Idle${RESET}" ;;
   working|thinking|streaming|busy)  seg_status="${C_STAT_WORK}Working${RESET}" ;;
   tool_use|tool|running|executing)  seg_status="${C_STAT_TOOL}Tool${RESET}" ;;
@@ -276,23 +312,10 @@ fi
 
 # ================= RIGHT SEGMENTS =================
 
-full_model_lc=$(printf '%s %s' "$model_id" "$model_name" | tr '[:upper:]' '[:lower:]')
-if [[ "$full_model_lc" == *"claude"* || "$full_model_lc" == *"gpt"* ]]; then
-  wk_frac="$p_wk"
-  h5_frac="$p_5h"
-elif [[ "$full_model_lc" == *"argon"* ]]; then
-  wk_frac="$a_wk"
-  h5_frac="$g_5h"
-else
-  wk_frac="$g_wk"
-  h5_frac="$g_5h"
-fi
-
 quota_color() {
-  local pct_int="$1"
-  if (( pct_int <= 10 )); then
+  if (( $1 <= 10 )); then
     printf '%s' "$RED"
-  elif (( pct_int <= 30 )); then
+  elif (( $1 <= 30 )); then
     printf '%s' "$YELLOW"
   else
     printf '%s' "$GREEN"
@@ -300,44 +323,28 @@ quota_color() {
 }
 
 fmt_quota_tier() {
-  local label="$1" frac="$2" mode="$3"
-  if [[ "$frac" == "-" || -z "$frac" ]]; then
+  local label="$1" dec="$2" int_val="$3" mode="$4"
+  if [[ "$int_val" == "-" || -z "$int_val" ]]; then
     case "$mode" in
-      bar) printf "${DIM}%s [······] --${RESET}" "$label" ;;
-      *)   printf "${DIM}%s --${RESET}" "$label" ;;
+      bar) printf '%s%s [······] --%s' "$DIM" "$label" "$RESET" ;;
+      *)   printf '%s%s --%s' "$DIM" "$label" "$RESET" ;;
     esac
     return
   fi
 
-  local pct_dec pct_int color
-  pct_dec=$(awk -v f="$frac" 'BEGIN { printf "%.2f", f * 100 }')
-  pct_int=$(awk -v f="$frac" 'BEGIN { printf "%.0f", f * 100 }')
-  color=$(quota_color "$pct_int")
-
+  local color
+  color=$(quota_color "$int_val")
   case "$mode" in
-    bar)
-      local bar
-      bar=$(make_bar "$pct_int" "$color")
-      printf "${color}%s %b %s%%${RESET}" "$label" "$bar" "$pct_dec"
-      ;;
-    dec)
-      printf "${color}%s %s%%${RESET}" "$label" "$pct_dec"
-      ;;
-    int)
-      printf "${color}%s %s%%${RESET}" "$label" "$pct_int"
-      ;;
+    bar) printf '%s%s %s %s%%%s' "$color" "$label" "$(make_bar "$int_val" "$color")" "$dec" "$RESET" ;;
+    dec) printf '%s%s %s%%%s' "$color" "$label" "$dec" "$RESET" ;;
+    int) printf '%s%s %s%%%s' "$color" "$label" "$int_val" "$RESET" ;;
   esac
 }
-
-wk_int=""
-h5_int=""
-[[ "$wk_frac" != "-" && -n "$wk_frac" ]] && wk_int=$(awk -v f="$wk_frac" 'BEGIN { printf "%.0f", f * 100 }')
-[[ "$h5_frac" != "-" && -n "$h5_frac" ]] && h5_int=$(awk -v f="$h5_frac" 'BEGIN { printf "%.0f", f * 100 }')
 
 # Context Window (prefer live transcript.jsonl count when newer than stdin)
 pct_int=${ctx_pct%.*}
 pct_int=${pct_int:-0}
-live_pct=$(resolve_live_ctx_pct "$brain_dir" "$transcript_path" "$ctx_size")
+live_pct=$(resolve_live_ctx_pct "$brain_dir" "$transcript_path" "$ctx_size" "$raw_sid")
 if [[ "${live_pct:-}" =~ ^[0-9]+$ ]] && (( live_pct > pct_int )); then
   pct_int=$live_pct
 fi
@@ -349,16 +356,15 @@ elif (( pct_int >= 60 )); then
 else
   ctx_color="$GREEN"
 fi
-ctx_bar=$(make_bar "$pct_int" "$ctx_color")
 
-seg_ctx_bar="${ctx_color}Ctx ${ctx_bar} ${pct_int}%${RESET}"
+seg_ctx_bar="${ctx_color}Ctx $(make_bar "$pct_int" "$ctx_color") ${pct_int}%${RESET}"
 seg_ctx_num="${ctx_color}Ctx ${pct_int}%${RESET}"
 
 # Emergency single critical metric (lowest quota <= 20%, otherwise Ctx)
-if [[ -n "$h5_int" ]] && (( h5_int <= 20 )) && { [[ -z "$wk_int" ]] || (( h5_int <= wk_int )); }; then
-  seg_danger=$(fmt_quota_tier "5h" "$h5_frac" "int")
-elif [[ -n "$wk_int" ]] && (( wk_int <= 20 )); then
-  seg_danger=$(fmt_quota_tier "Wk" "$wk_frac" "int")
+if [[ "$h5_int" =~ ^[0-9]+$ ]] && (( h5_int <= 20 )) && { [[ ! "$wk_int" =~ ^[0-9]+$ ]] || (( h5_int <= wk_int )); }; then
+  seg_danger=$(fmt_quota_tier "5h" "$h5_dec" "$h5_int" "int")
+elif [[ "$wk_int" =~ ^[0-9]+$ ]] && (( wk_int <= 20 )); then
+  seg_danger=$(fmt_quota_tier "Wk" "$wk_dec" "$wk_int" "int")
 else
   seg_danger="$seg_ctx_num"
 fi
@@ -372,9 +378,9 @@ left_split_sub="${seg_model_short}${SEP}${seg_mode}${SEP}${seg_status}${SEP}${se
 left_split="${seg_model_short}${SEP}${seg_mode}${SEP}${seg_status}"
 left_sidebar="${seg_model_mini}${SEP}${seg_status}"
 
-right_full="$(fmt_quota_tier "Wk" "$wk_frac" "bar")${SEP}$(fmt_quota_tier "5h" "$h5_frac" "bar")${SEP}${seg_ctx_bar}"
-right_dec="$(fmt_quota_tier "Wk" "$wk_frac" "dec")${SEP}$(fmt_quota_tier "5h" "$h5_frac" "dec")${SEP}${seg_ctx_num}"
-right_int="$(fmt_quota_tier "Wk" "$wk_frac" "int")${SEP}$(fmt_quota_tier "5h" "$h5_frac" "int")${SEP}${seg_ctx_num}"
+right_full="$(fmt_quota_tier "Wk" "$wk_dec" "$wk_int" "bar")${SEP}$(fmt_quota_tier "5h" "$h5_dec" "$h5_int" "bar")${SEP}${seg_ctx_bar}"
+right_dec="$(fmt_quota_tier "Wk" "$wk_dec" "$wk_int" "dec")${SEP}$(fmt_quota_tier "5h" "$h5_dec" "$h5_int" "dec")${SEP}${seg_ctx_num}"
+right_int="$(fmt_quota_tier "Wk" "$wk_dec" "$wk_int" "int")${SEP}$(fmt_quota_tier "5h" "$h5_dec" "$h5_int" "int")${SEP}${seg_ctx_num}"
 
 tty_cols() {
   local tty="$1" dev sz c
@@ -384,7 +390,7 @@ tty_cols() {
       sz=$(stty size < "$dev" 2>/dev/null || true)
       c=${sz#* }
       if [[ "$c" =~ ^[0-9]+$ ]] && (( c > 0 )); then
-        echo "$c"
+        printf '%s' "$c"
         return 0
       fi
     fi
@@ -394,13 +400,13 @@ tty_cols() {
 
 get_cols() {
   if [[ "$term_cols" =~ ^[0-9]+$ ]] && (( term_cols > 0 )); then
-    echo "$term_cols"
+    printf '%s' "$term_cols"
     return
   fi
 
   case "${OSTYPE:-}" in
     msys*|cygwin*)
-      echo "${COLUMNS:-140}"
+      printf '%s' "${COLUMNS:-140}"
       return
       ;;
   esac
@@ -411,25 +417,23 @@ get_cols() {
     [[ -z "$info" ]] && break
     read -r parent_pid tty <<< "$info"
     if c=$(tty_cols "$tty"); then
-      echo "$c"
+      printf '%s' "$c"
       return
     fi
     pid="$parent_pid"
     depth=$(( depth + 1 ))
   done
 
-  echo "${COLUMNS:-140}"
+  printf '%s' "${COLUMNS:-140}"
 }
 
 visible_len() {
-  local clean
-  clean=$(printf '%b' "$1" | sed $'s/\033\\[[0-9;]*[mK]//g')
-  printf '%s' "$clean" | wc -m | tr -d ' '
+  local clean="${1//$'\033'\[*([0-9;])m/}"
+  printf '%s' "${#clean}"
 }
 
 cols=$(get_cols)
 
-# Evaluate tiers from widest to narrowest until left + right + 2 <= cols
 candidates_left=("$left_full" "$left_full")
 candidates_right=("$right_full" "$right_dec")
 
@@ -461,9 +465,9 @@ right_len=$(visible_len "$chosen_right")
 pad=$(( cols - left_len - right_len ))
 
 if (( pad >= 2 )); then
-  spacer=$(printf "%${pad}s")
+  printf -v spacer '%*s' "$pad" ''
 else
   spacer="  ${DIM}│${RESET}  "
 fi
 
-printf "%b%b%b\n" "$chosen_left" "$spacer" "$chosen_right"
+printf '%s%s%s\n' "$chosen_left" "$spacer" "$chosen_right"
