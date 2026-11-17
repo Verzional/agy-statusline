@@ -29,12 +29,12 @@ RED=$'\033[31m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
 
-# --- Single-Pass JSON Extraction & Quota Pre-Computation ---
+# --- Single-Pass JSON Extraction & Quota/Context Pre-Computation ---
 IFS=$'\t' read -r \
   term_cols raw_sid payload_title transcript_path artifact_count \
   model_name effort \
   wk_dec wk_int h5_dec h5_int \
-  ctx_pct ctx_size cycle_mode live_status sub_active sub_total < <(
+  ctx_x100 ctx_size cycle_mode live_status sub_active sub_total < <(
   printf '%s' "$input" | jq -r '
     def fmt_dec:
       if . == null or . == "-" then "-"
@@ -70,10 +70,11 @@ IFS=$'\t' read -r \
       ($h5 | fmt_dec),
       ($h5 | fmt_int),
       (
-        .context_window.used_percentage //
-        (if ((.context_window.total_input_tokens // 0) > 0 and (.context_window.context_window_size // 0) > 0)
-         then ((.context_window.total_input_tokens * 100) / .context_window.context_window_size | floor)
-         else 0 end)
+        if .context_window.used_percentage != null then
+          (.context_window.used_percentage * 100 | round)
+        elif ((.context_window.total_input_tokens // 0) > 0 and (.context_window.context_window_size // 0) > 0) then
+          ((.context_window.total_input_tokens * 10000 / .context_window.context_window_size) | round)
+        else 0 end
       ),
       (.context_window.context_window_size // 1048576),
       (.cycle_mode // .permission_mode // .mode // "-"),
@@ -114,8 +115,8 @@ resolve_brain_dir() {
 
 brain_dir=$(resolve_brain_dir "$raw_sid" "$transcript_path")
 
-# --- Live Context Usage (Cached by transcript mtime:size) ---
-resolve_live_ctx_pct() {
+# --- Live Context Usage (Cached by transcript mtime:size as hundredths of %) ---
+resolve_live_ctx_x100() {
   local bdir="$1" tpath="$2" max_tokens="$3" sid="$4"
   local log_file=""
 
@@ -129,16 +130,16 @@ resolve_live_ctx_pct() {
 
   local stat_sig=""
   case "${OSTYPE:-}" in
-    darwin*) stat_sig=$(stat -f '%m:%z' "$log_file" 2>/dev/null || true) ;;
-    *)       stat_sig=$(stat -c '%Y:%s' "$log_file" 2>/dev/null || true) ;;
+    darwin*) stat_sig=$(stat -f 'v2:%m:%z' "$log_file" 2>/dev/null || true) ;;
+    *)       stat_sig=$(stat -c 'v2:%Y:%s' "$log_file" 2>/dev/null || true) ;;
   esac
 
   local cache="${TMPDIR:-/tmp}/agy-ctx-${sid}"
   if [[ -n "$stat_sig" && -f "$cache" ]]; then
-    local cached_sig cached_pct
-    IFS=' ' read -r cached_sig cached_pct < "$cache" || true
-    if [[ "$cached_sig" == "$stat_sig" && "$cached_pct" =~ ^[0-9]+$ ]]; then
-      printf '%s' "$cached_pct"
+    local cached_sig cached_x100
+    IFS=' ' read -r cached_sig cached_x100 < "$cache" || true
+    if [[ "$cached_sig" == "$stat_sig" && "$cached_x100" =~ ^[0-9]+$ ]]; then
+      printf '%s' "$cached_x100"
       return
     fi
   fi
@@ -150,7 +151,7 @@ resolve_live_ctx_pct() {
   ' 2>/dev/null | tail -n 1 || true)
 
   if [[ "$used_tokens" =~ ^[0-9]+$ ]] && (( used_tokens > 0 )); then
-    local computed=$(( used_tokens * 100 / max_tokens ))
+    local computed=$(( (used_tokens * 10000 + max_tokens / 2) / max_tokens ))
     [[ -n "$stat_sig" ]] && printf '%s %s' "$stat_sig" "$computed" > "$cache"
     printf '%s' "$computed"
   fi
@@ -342,23 +343,26 @@ fmt_quota_tier() {
 }
 
 # Context Window (prefer live transcript.jsonl count when newer than stdin)
-pct_int=${ctx_pct%.*}
-pct_int=${pct_int:-0}
-live_pct=$(resolve_live_ctx_pct "$brain_dir" "$transcript_path" "$ctx_size" "$raw_sid")
-if [[ "${live_pct:-}" =~ ^[0-9]+$ ]] && (( live_pct > pct_int )); then
-  pct_int=$live_pct
+[[ "$ctx_x100" =~ ^[0-9]+$ ]] || ctx_x100=0
+live_x100=$(resolve_live_ctx_x100 "$brain_dir" "$transcript_path" "$ctx_size" "$raw_sid")
+if [[ "${live_x100:-}" =~ ^[0-9]+$ ]] && (( live_x100 > ctx_x100 )); then
+  ctx_x100=$live_x100
 fi
 
-if (( pct_int >= 80 )); then
+ctx_int=$(( (ctx_x100 + 50) / 100 ))
+printf -v ctx_dec '%d.%02d' $(( ctx_x100 / 100 )) $(( ctx_x100 % 100 ))
+
+if (( ctx_int >= 80 )); then
   ctx_color="$RED"
-elif (( pct_int >= 60 )); then
+elif (( ctx_int >= 60 )); then
   ctx_color="$YELLOW"
 else
   ctx_color="$GREEN"
 fi
 
-seg_ctx_bar="${ctx_color}Ctx $(make_bar "$pct_int" "$ctx_color") ${pct_int}%${RESET}"
-seg_ctx_num="${ctx_color}Ctx ${pct_int}%${RESET}"
+seg_ctx_bar="${ctx_color}Ctx $(make_bar "$ctx_int" "$ctx_color") ${ctx_dec}%${RESET}"
+seg_ctx_dec="${ctx_color}Ctx ${ctx_dec}%${RESET}"
+seg_ctx_int="${ctx_color}Ctx ${ctx_int}%${RESET}"
 
 # Emergency single critical metric (lowest quota <= 20%, otherwise Ctx)
 if [[ "$h5_int" =~ ^[0-9]+$ ]] && (( h5_int <= 20 )) && { [[ ! "$wk_int" =~ ^[0-9]+$ ]] || (( h5_int <= wk_int )); }; then
@@ -366,7 +370,7 @@ if [[ "$h5_int" =~ ^[0-9]+$ ]] && (( h5_int <= 20 )) && { [[ ! "$wk_int" =~ ^[0-
 elif [[ "$wk_int" =~ ^[0-9]+$ ]] && (( wk_int <= 20 )); then
   seg_danger=$(fmt_quota_tier "Wk" "$wk_dec" "$wk_int" "int")
 else
-  seg_danger="$seg_ctx_num"
+  seg_danger="$seg_ctx_int"
 fi
 
 # ================= RESPONSIVE SELECTION & ALIGNMENT =================
@@ -379,8 +383,8 @@ left_split="${seg_model_short}${SEP}${seg_mode}${SEP}${seg_status}"
 left_sidebar="${seg_model_mini}${SEP}${seg_status}"
 
 right_full="$(fmt_quota_tier "Wk" "$wk_dec" "$wk_int" "bar")${SEP}$(fmt_quota_tier "5h" "$h5_dec" "$h5_int" "bar")${SEP}${seg_ctx_bar}"
-right_dec="$(fmt_quota_tier "Wk" "$wk_dec" "$wk_int" "dec")${SEP}$(fmt_quota_tier "5h" "$h5_dec" "$h5_int" "dec")${SEP}${seg_ctx_num}"
-right_int="$(fmt_quota_tier "Wk" "$wk_dec" "$wk_int" "int")${SEP}$(fmt_quota_tier "5h" "$h5_dec" "$h5_int" "int")${SEP}${seg_ctx_num}"
+right_dec="$(fmt_quota_tier "Wk" "$wk_dec" "$wk_int" "dec")${SEP}$(fmt_quota_tier "5h" "$h5_dec" "$h5_int" "dec")${SEP}${seg_ctx_dec}"
+right_int="$(fmt_quota_tier "Wk" "$wk_dec" "$wk_int" "int")${SEP}$(fmt_quota_tier "5h" "$h5_dec" "$h5_int" "int")${SEP}${seg_ctx_int}"
 
 tty_cols() {
   local tty="$1" dev sz c
