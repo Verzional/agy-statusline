@@ -148,7 +148,7 @@ resolve_brain_dir() {
 
 brain_dir=$(resolve_brain_dir "$raw_sid" "$transcript_path")
 
-# --- Live Context Usage (Cached by transcript mtime:size as hundredths of %) ---
+# --- Live Context Usage (Stat-cached & grep pre-filtered for <10ms parse) ---
 resolve_live_ctx_x100() {
   local bdir="$1" tpath="$2" max_tokens="$3" sid="$4"
   local log_file=""
@@ -169,7 +169,7 @@ resolve_live_ctx_x100() {
 
   local cache="${TMPDIR:-/tmp}/agy-ctx-${sid}"
   if [[ -n "$stat_sig" && -f "$cache" ]]; then
-    local cached_sig cached_x100
+    local cached_sig="" cached_x100=""
     IFS=' ' read -r cached_sig cached_x100 < "$cache" || true
     if [[ "$cached_sig" == "$stat_sig" && "$cached_x100" =~ ^[0-9]+$ ]]; then
       printf '%s' "$cached_x100"
@@ -178,10 +178,10 @@ resolve_live_ctx_x100() {
   fi
 
   local used_tokens
-  used_tokens=$(tail -n 120 "$log_file" 2>/dev/null | jq -R '
-    fromjson? | select(type == "object" and (.input_tokens != null or .cache_read_tokens != null)) |
-    ((.input_tokens // 0) + (.cache_read_tokens // 0) + (.output_tokens // 0))
-  ' 2>/dev/null | tail -n 1 || true)
+  used_tokens=$(tail -c 1048576 "$log_file" 2>/dev/null \
+    | { grep -E '"(input_tokens|cache_read_tokens)":' || true; } \
+    | jq -R 'fromjson? | select(type == "object") | ((.input_tokens // 0) + (.cache_read_tokens // 0) + (.output_tokens // 0))' 2>/dev/null \
+    | tail -n 1 || true)
 
   if [[ "$used_tokens" =~ ^[0-9]+$ ]] && (( used_tokens > 0 )); then
     local computed=$(( (used_tokens * 10000 + max_tokens / 2) / max_tokens ))
@@ -462,12 +462,22 @@ get_cols() {
       ;;
   esac
 
-  local pid="${PPID:-}" info parent_pid tty c depth=0
+  local tty_cache="${TMPDIR:-/tmp}/agy-tty-${PPID:-0}" cached_tty="" c=""
+  if [[ -f "$tty_cache" ]]; then
+    IFS= read -r cached_tty < "$tty_cache" || true
+    if c=$(tty_cols "$cached_tty"); then
+      printf '%s' "$c"
+      return
+    fi
+  fi
+
+  local pid="${PPID:-}" info parent_pid tty depth=0
   while [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] && (( pid > 1 && depth < 10 )); do
     info=$(ps -p "$pid" -o ppid=,tty= 2>/dev/null || true)
     [[ -z "$info" ]] && break
     read -r parent_pid tty <<< "$info"
     if c=$(tty_cols "$tty"); then
+      printf '%s\n' "$tty" > "$tty_cache"
       printf '%s' "$c"
       return
     fi
