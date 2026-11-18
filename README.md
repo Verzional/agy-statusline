@@ -1,91 +1,74 @@
 # agy-statusline
 
-High-performance, responsive two-cluster statusline for **Antigravity CLI (`agy`)** built in pure Bash for **macOS** and **Linux**.
+[![Release](https://img.shields.io/github/v/release/Verzional/agy-statusline?style=flat-square&color=blue)](https://github.com/Verzional/agy-statusline/releases/latest)
+[![Build](https://img.shields.io/github/actions/workflow/status/Verzional/agy-statusline/release.yml?style=flat-square&label=build)](https://github.com/Verzional/agy-statusline/actions)
+[![Go](https://img.shields.io/github/go-mod/go-version/Verzional/agy-statusline?style=flat-square&color=00ADD8)](go.mod)
 
-## Responsive Layout
+Zero-dependency, sub-5ms statusline for **Antigravity CLI (`agy`)**.
 
-The statusline measures the exact rendered width of each segment and automatically steps down across layout tiers so it stays flush-right without wrapping—even in 50/50 split panes or narrow sidebars:
-
-- **Wide (`135+` cols):**
-  ```text
-  Session │ Model (Effort) │ Mode │ Status │ Sub 0/24 │ Task 3/5          Wk [██████] 95.98% │ 5h [█████·] 86.41% │ Ctx [██····] 26%
-  ```
-- **Medium (`105–134` cols):** Drops ASCII bars while keeping color-coded decimals (`Wk 95.98% │ 5h 86.41% │ Ctx 26%`).
-- **Half-Screen Split (`75–104` cols):** Strips vendor prefixes (`Hydrogen (Low) │ Edits │ Working`), dynamically surfaces `Sub active/total` when subagents are active, and preserves all three right-side percentages.
-- **Sidebar (`50–74` cols):** Abbreviates effort (`Hydrogen (L) │ Working`) and rounds quotas to integers (`Wk 96% │ 5h 86% │ Ctx 26%`).
-- **Emergency (`< 50` cols):** Keeps `Model (E) │ Status` on the left and displays whichever metric is most urgent on the right (lowest quota at `<= 20%`, otherwise `Ctx %`).
-
-## Compatibility & Requirements
-
-- **Shells:** Works seamlessly whether your interactive shell is **Zsh** or **Bash**—the script executes via `#!/usr/bin/env bash`, and all setup commands below are copy-paste compatible with both shells.
-- **Operating Systems:** **macOS**, **Linux**, **WSL**, and **Windows** (via Git Bash).
-- **Dependencies:**
-  - `bash` (3.2+)
-  - `jq` (`brew install jq` on macOS, `sudo apt install jq` / `sudo pacman -S jq` on Linux)
+![agy-statusline responsive layout tiers](assets/preview.svg)
 
 ## Installation
 
-All commands below work identically in **Zsh** and **Bash**.
+### macOS & Linux
 
-### Step 1: Install the script
-
-#### Option A: Clone & symlink (Recommended — easy updates via `git pull`)
-
-```bash
-git clone [https://github.com/Verzional/agy-statusline.git](https://github.com/Verzional/agy-statusline.git) ~/agy-statusline
-chmod +x ~/agy-statusline/statusline.sh
-mkdir -p ~/.gemini/antigravity-cli
-ln -sf ~/agy-statusline/statusline.sh ~/.gemini/antigravity-cli/statusline.sh
+```sh
+curl -fsSL [https://raw.githubusercontent.com/Verzional/agy-statusline/main/install.sh](https://raw.githubusercontent.com/Verzional/agy-statusline/main/install.sh) | sh
 ```
 
-#### Option B: Standalone download (No repo clone)
+Installs to `~/.local/bin/agy-statusline` (override with `INSTALL_DIR=/usr/local/bin`). Re-run anytime to update.
 
-```bash
-mkdir -p ~/.gemini/antigravity-cli
-curl -fsSL [https://raw.githubusercontent.com/Verzional/agy-statusline/main/statusline.sh](https://raw.githubusercontent.com/Verzional/agy-statusline/main/statusline.sh) \
-  -o ~/.gemini/antigravity-cli/statusline.sh
-chmod +x ~/.gemini/antigravity-cli/statusline.sh
+### Windows
+
+Download `agy-statusline_v*_windows_amd64.zip` (or `arm64`) from [Releases](https://github.com/Verzional/agy-statusline/releases/latest) and extract `agy-statusline.exe` to a directory on your `PATH`.
+
+### Go
+
+```sh
+go install [github.com/Verzional/agy-statusline@latest](https://github.com/Verzional/agy-statusline@latest)
 ```
 
-### Step 2: Wire into `~/.gemini/antigravity-cli/settings.json`
+### From Source
 
-Safely merge the `statusLine` block into your existing `settings.json` without overwriting other configuration keys:
+```sh
+git clone [https://github.com/Verzional/agy-statusline.git](https://github.com/Verzional/agy-statusline.git)
+cd agy-statusline && make install
+```
 
-```bash
+## Configuration
+
+Add `statusLine` to `~/.gemini/antigravity-cli/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.local/bin/agy-statusline",
+    "enabled": true
+  }
+}
+```
+
+Or merge it into an existing config with `jq`:
+
+```sh
 SETTINGS="$HOME/.gemini/antigravity-cli/settings.json"
-[ -f "$SETTINGS" ] \vert{}\vert{} printf '{}\n' > "$SETTINGS"
-
-jq '.statusLine = {
-  "type": "command",
-  "command": "~/.gemini/antigravity-cli/statusline.sh",
-  "enabled": true
-}' "$SETTINGS" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "$SETTINGS"
+[ -f "$SETTINGS" ] || printf '{}\n' > "$SETTINGS"
+jq '.statusLine = {"type": "command", "command": "~/.local/bin/agy-statusline", "enabled": true}' "$SETTINGS" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "$SETTINGS"
 ```
 
-*(Optional)* Add `"stack_with_default": true` inside the `"statusLine"` object to render Antigravity's built-in status bar alongside this one.
+Start a new `agy` session (or run `/statusline` inside an active session) to enable it. 
 
-### Step 3: Verify & launch
+Set `"stack_with_default": true` inside `"statusLine"` to keep Antigravity's default bar visible alongside this one.
 
-Test across full-screen (`153` cols) and half-screen split (`80` cols) widths:
+## Telemetry
 
-```bash
-for w in 153 80; do
-  printf '{"terminal_width":%d,"conversation_title":"Responsive Statusline","model":{"display_name":"Gemini 4 Hydrogen (Low)"},"cycle_mode":"accept-edits","agent_state":"working","quota":{"gemini-weekly":{"remaining_fraction":0.9598},"gemini-5h":{"remaining_fraction":0.8641}},"context_window":{"used_percentage":26}}\n' "$w" \
-    | ~/.gemini/antigravity-cli/statusline.sh
-done
-```
-
-Start a new `agy` session (or run `/statusline` inside an active session) to enable it.
-
-## Refresh Behavior
-
-- **Context (`Ctx`):** Syncs live during turns directly from the active session's `transcript.jsonl`.
-- **Quotas (`Wk` / `5h`):** Managed server-side by `agy` and refreshed on session startup, prompt submission, or `/usage`.
-
-## Updating
-
-If you installed via **Option A**, pull the latest changes—the symlink updates Antigravity CLI immediately:
-
-```bash
-git -C ~/agy-statusline pull
-```
+| Segment                  | Data Source                                    | Behavior                                                             |
+| :----------------------- | :--------------------------------------------- | :------------------------------------------------------------------- |
+| **Session**              | `stdin` payload / `conversation_metadata.json` | Truncated to 18 chars; falls back to 8-char session ID               |
+| **Model & Effort**       | `stdin` payload                                | Strips vendor prefix in split panes; abbreviates effort in sidebars  |
+| **Mode & Status**        | `stdin` payload                                | Color-coded by cycle mode (`Plan`, `Edits`, `Auto`, `Ask`) and state |
+| **Subagents (`Sub`)**    | `stdin` payload                                | Hidden in split panes unless subagents are actively running          |
+| **Tasks (`Task`)**       | `brain/<id>/task.md`                           | Counts `- [x]` / `- [ ]` checkboxes; falls back to `Art N`           |
+| **Quotas (`Wk` / `5h`)** | `stdin` payload                                | Auto-routes Gemini, Argon, Claude, and GPT quota buckets             |
+| **Context (`Ctx`)**      | `transcript.jsonl` / `stdin`                   | Syncs live token usage during turns; surfaces first under 50 cols    |
