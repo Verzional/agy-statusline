@@ -36,7 +36,9 @@ cd agy-statusline && make install
 
 ## Configuration
 
-Add `statusLine` to `~/.gemini/antigravity-cli/settings.json`:
+Add `statusLine` to `~/.gemini/antigravity-cli/settings.json` (`%USERPROFILE%\.gemini\antigravity-cli\settings.json` on Windows):
+
+### macOS & Linux
 
 ```json
 {
@@ -56,9 +58,21 @@ SETTINGS="$HOME/.gemini/antigravity-cli/settings.json"
 jq '.statusLine = {"type": "command", "command": "~/.local/bin/agy-statusline", "enabled": true}' "$SETTINGS" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "$SETTINGS"
 ```
 
-Start a new `agy` session (or run `/statusline` inside an active session) to enable it. 
+### Windows
 
-Set `"stack_with_default": true` inside `"statusLine"` to keep Antigravity's default bar visible alongside this one.
+Requires `agy-statusline.exe` on your `PATH` (or an escaped full path like `C:\\Users\\<user>\\.local\\bin\\agy-statusline.exe`):
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "agy-statusline.exe",
+    "enabled": true
+  }
+}
+```
+
+Start a new `agy` session (or run `/statusline` inside an active session) to enable it.
 
 ## Telemetry
 
