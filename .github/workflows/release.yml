@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Publish (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Build archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          EXT=""
+          [ "$GOOS" = "windows" ] && EXT=".exe"
+          OUT="agy-statusline${EXT}"
+          go build -trimpath -ldflags="-s -w" -o "$OUT" .
+          mkdir -p dist
+          if [ "$GOOS" = "windows" ]; then
+            zip -q "dist/agy-statusline_${TAG}_${GOOS}_${GOARCH}.zip" "$OUT" README.md
+          else
+            tar -czf "dist/agy-statusline_${TAG}_${GOOS}_${GOARCH}.tar.gz" "$OUT" README.md
+          fi
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
