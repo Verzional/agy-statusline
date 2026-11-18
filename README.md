@@ -1,7 +1,6 @@
 # agy-statusline
 
 [![Release](https://img.shields.io/github/v/release/Verzional/agy-statusline?style=flat-square&color=blue)](https://github.com/Verzional/agy-statusline/releases/latest)
-[![Build](https://img.shields.io/github/actions/workflow/status/Verzional/agy-statusline/release.yml?style=flat-square&label=build)](https://github.com/Verzional/agy-statusline/actions)
 [![Go](https://img.shields.io/github/go-mod/go-version/Verzional/agy-statusline?style=flat-square&color=00ADD8)](go.mod)
 
 Zero-dependency, sub-5ms statusline for **Antigravity CLI (`agy`)**.
