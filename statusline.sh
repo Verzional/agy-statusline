@@ -8,6 +8,7 @@ case "${OSTYPE:-}" in
 esac
 
 IFS= read -rd '' input < /dev/stdin || true
+[[ -z "${input//[[:space:]]/}" ]] && input='{}'
 
 # --- ANSI Colors (Raw ESC via $'...' for zero-%b formatting) ---
 C_SESSION=$'\033[38;5;141m'   # Lavender
@@ -29,27 +30,48 @@ RED=$'\033[31m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
 
-# --- Single-Pass JSON Extraction & Quota/Context Pre-Computation ---
-IFS=$'\t' read -r \
+# --- Single-Pass JSON Extraction (Non-Whitespace \x1f Delimiter) ---
+IFS=$'\x1f' read -r \
   term_cols raw_sid payload_title transcript_path artifact_count \
   model_name effort \
   wk_dec wk_int h5_dec h5_int \
   ctx_x100 ctx_size cycle_mode live_status sub_active sub_total < <(
   printf '%s' "$input" | jq -r '
-    def fmt_dec:
-      if . == null or . == "-" then "-"
+    def nonempty:
+      if . == null or . == false then "-"
       else
-        ((. * 10000 | round) / 100 | tostring) as $s |
+        (tostring | gsub("[\u001f\t\r\n]+"; " ") | gsub("^ +| +$"; "")) as $s |
+        if ($s | length) == 0 then "-" else $s end
+      end;
+    def first_str(vals):
+      ([vals[] | select(type == "string") | gsub("^ +| +$"; "") | select(length > 0)] | first) // "-";
+    def fmt_dec:
+      (try (if . == null or . == false or . == "" or . == "-" then null else (tonumber * 10000 | round) end) catch null) as $v |
+      if $v == null then "-"
+      else
+        (($v / 100) | tostring) as $s |
         if ($s | test("\\.")) then
           if ($s | test("\\.[0-9]$")) then $s + "0" else $s end
         else $s + ".00" end
       end;
     def fmt_int:
-      if . == null or . == "-" then "-"
-      else (. * 100 | round | tostring) end;
+      (try (if . == null or . == false or . == "" or . == "-" then null else (tonumber * 100 | round) end) catch null) as $v |
+      if $v == null then "-" else ($v | tostring) end;
 
-    (if (.model | type) == "object" then (.model.id // "-") else "-" end) as $mid |
-    (if (.model | type) == "object" then (.model.display_name // .model.name // .model.id // "default") else (.model // "default") end) as $mname |
+    first_str([
+      (if (.model | type) == "object" then .model.id else empty end),
+      .model_id
+    ]) as $mid |
+    first_str([
+      (if (.model | type) == "object" then .model.display_name else empty end),
+      (if (.model | type) == "object" then .model.label else empty end),
+      (if (.model | type) == "object" then .model.name else empty end),
+      (if (.model | type) == "object" then .model.model_name else empty end),
+      (if (.model | type) == "object" then .model.id else empty end),
+      (if (.model | type) == "string" then .model else empty end),
+      .model_name,
+      .selected_model
+    ]) as $mname |
     (($mid + " " + $mname) | ascii_downcase) as $mlc |
     (if ($mlc | contains("claude") or contains("gpt")) then .quota["3p-weekly"].remaining_fraction
      elif ($mlc | contains("argon")) then .quota["gemini-argon-wtu-weekly"].remaining_fraction
@@ -59,26 +81,37 @@ IFS=$'\t' read -r \
 
     [
       (.terminal_width // .terminal.columns // .dimensions.columns // .viewport.width // .columns // .width // 0),
-      (.conversation_id // .session_id // "-"),
-      (.conversation_title // .session_title // .title // "-"),
-      (.transcript_path // "-"),
+      first_str([.conversation_id, .session_id]),
+      first_str([.conversation_title, .session_title, .title]),
+      first_str([.transcript_path]),
       (.artifact_count // 0),
       $mname,
-      (if (.model | type) == "object" then (.model.effort // "-") else "-" end),
+      first_str([
+        (if (.model | type) == "object" then .model.effort else empty end),
+        .effort
+      ]),
       ($wk | fmt_dec),
       ($wk | fmt_int),
       ($h5 | fmt_dec),
       ($h5 | fmt_int),
       (
-        if .context_window.used_percentage != null then
-          (.context_window.used_percentage * 100 | round)
-        elif ((.context_window.total_input_tokens // 0) > 0 and (.context_window.context_window_size // 0) > 0) then
-          ((.context_window.total_input_tokens * 10000 / .context_window.context_window_size) | round)
-        else 0 end
+        try (
+          if .context_window.used_percentage != null and .context_window.used_percentage != "" then
+            (.context_window.used_percentage | tonumber * 100 | round)
+          elif ((.context_window.total_input_tokens // 0 | tonumber) > 0 and (.context_window.context_window_size // 0 | tonumber) > 0) then
+            (((.context_window.total_input_tokens | tonumber) * 10000 / (.context_window.context_window_size | tonumber)) | round)
+          else 0 end
+        ) catch 0
       ),
       (.context_window.context_window_size // 1048576),
-      (.cycle_mode // .permission_mode // .mode // "-"),
-      (if (.agent_state | type) == "object" then (.agent_state.state // .agent_state.status // "-") else (.agent_state // .status // .state // "-") end),
+      first_str([.cycle_mode, .permission_mode, .mode]),
+      first_str([
+        (if (.agent_state | type) == "object" then .agent_state.state else empty end),
+        (if (.agent_state | type) == "object" then .agent_state.status else empty end),
+        (if (.agent_state | type) == "string" then .agent_state else empty end),
+        .status,
+        .state
+      ]),
       (
         if (.subagents | type) == "array" then
           ([.subagents[] | select(.status == "running" or .status == "working" or .status == "in_progress" or .status == "active")] | length)
@@ -92,7 +125,7 @@ IFS=$'\t' read -r \
         elif (.subagents | type) == "number" then .subagents
         else 0 end
       )
-    ] | map(tostring | gsub("[\t\r\n]+"; " ")) | @tsv
+    ] | map(nonempty) | join("\u001f")
   '
 )
 
@@ -207,7 +240,8 @@ resolve_brain_tasks() {
 
 # --- Pure-Bash UTF-8 Bar Builder ---
 make_bar() {
-  local pct_int="$1" color="$2" width=6
+  local pct_int="${1:-0}" color="$2" width=6
+  [[ "$pct_int" =~ ^-?[0-9]+$ ]] || pct_int=0
   (( pct_int < 0 )) && pct_int=0
   (( pct_int > 100 )) && pct_int=100
   local filled=$(( pct_int * width / 100 ))
@@ -221,9 +255,11 @@ make_bar() {
 
 # ================= LEFT SEGMENTS =================
 
-# 1. Session Name (capped at 18 chars in pure Bash)
+# 1. Session Name (ignore paths/UUIDs; cap at 18 chars)
 session_label=""
-if [[ "$payload_title" != "-" && -n "$payload_title" && "$payload_title" != "$raw_sid" ]]; then
+if [[ "$payload_title" != "-" && -n "$payload_title" && "$payload_title" != "$raw_sid" \
+      && "$payload_title" != /* && "$payload_title" != ~/* \
+      && ! "$payload_title" =~ ^[0-9a-fA-F-]{32,}$ ]]; then
   session_label="$payload_title"
 elif [[ "$raw_sid" != "-" && -n "$raw_sid" ]]; then
   session_label=$(resolve_session_title "$raw_sid")
@@ -240,35 +276,41 @@ else
   seg_session="${DIM}--${RESET}"
 fi
 
-# 2. Model Variants (Pure Bash)
-if [[ "$effort" != "-" && -n "$effort" && "$model_name" != *"(${effort})"* ]]; then
-  case "$effort" in
-    low)    effort_cap="Low" ;;
-    medium) effort_cap="Medium" ;;
-    high)   effort_cap="High" ;;
-    none)   effort_cap="None" ;;
-    *)      effort_cap="$effort" ;;
+# 2. Model Variants (Safe on empty startup payloads)
+if [[ "$model_name" == "-" || -z "$model_name" ]]; then
+  seg_model_full="${DIM}--${RESET}"
+  seg_model_short="${DIM}--${RESET}"
+  seg_model_mini="${DIM}--${RESET}"
+else
+  if [[ "$effort" != "-" && -n "$effort" && "$model_name" != *"(${effort})"* ]]; then
+    case "$effort" in
+      low)    effort_cap="Low" ;;
+      medium) effort_cap="Medium" ;;
+      high)   effort_cap="High" ;;
+      none)   effort_cap="None" ;;
+      *)      effort_cap="$effort" ;;
+    esac
+    model_name="${model_name} (${effort_cap})"
+  fi
+
+  short_model="$model_name"
+  case "$short_model" in
+    Gemini\ [0-9]*\ *) short_model="${short_model#Gemini [0-9]* }" ;;
+    Gemini\ *)         short_model="${short_model#Gemini }" ;;
+    Claude\ *)         short_model="${short_model#Claude }" ;;
+    OpenAI\ *)         short_model="${short_model#OpenAI }" ;;
   esac
-  model_name="${model_name} (${effort_cap})"
+  [[ -z "$short_model" ]] && short_model="$model_name"
+
+  mini_model="$short_model"
+  if [[ "$mini_model" =~ ^(.*)\(([A-Za-z])[A-Za-z]*\)$ ]]; then
+    mini_model="${BASH_REMATCH[1]}(${BASH_REMATCH[2]})"
+  fi
+
+  seg_model_full="${C_MODEL}${model_name}${RESET}"
+  seg_model_short="${C_MODEL}${short_model}${RESET}"
+  seg_model_mini="${C_MODEL}${mini_model}${RESET}"
 fi
-
-short_model="$model_name"
-case "$short_model" in
-  Gemini\ [0-9]*\ *) short_model="${short_model#Gemini [0-9]* }" ;;
-  Gemini\ *)         short_model="${short_model#Gemini }" ;;
-  Claude\ *)         short_model="${short_model#Claude }" ;;
-  OpenAI\ *)         short_model="${short_model#OpenAI }" ;;
-esac
-[[ -z "$short_model" ]] && short_model="$model_name"
-
-mini_model="$short_model"
-if [[ "$mini_model" =~ ^(.*)\(([A-Za-z])[A-Za-z]*\)$ ]]; then
-  mini_model="${BASH_REMATCH[1]}(${BASH_REMATCH[2]})"
-fi
-
-seg_model_full="${C_MODEL}${model_name}${RESET}"
-seg_model_short="${C_MODEL}${short_model}${RESET}"
-seg_model_mini="${C_MODEL}${mini_model}${RESET}"
 
 # 3. Mode (nocasematch active)
 case "$cycle_mode" in
@@ -325,13 +367,16 @@ quota_color() {
 
 fmt_quota_tier() {
   local label="$1" dec="$2" int_val="$3" mode="$4"
-  if [[ "$int_val" == "-" || -z "$int_val" ]]; then
+  if [[ ! "$int_val" =~ ^-?[0-9]+$ ]]; then
     case "$mode" in
       bar) printf '%s%s [······] --%s' "$DIM" "$label" "$RESET" ;;
       *)   printf '%s%s --%s' "$DIM" "$label" "$RESET" ;;
     esac
     return
   fi
+
+  (( int_val < 0 )) && int_val=0
+  (( int_val > 100 )) && int_val=100
 
   local color
   color=$(quota_color "$int_val")
@@ -342,12 +387,14 @@ fmt_quota_tier() {
   esac
 }
 
-# Context Window (prefer live transcript.jsonl count when newer than stdin)
-[[ "$ctx_x100" =~ ^[0-9]+$ ]] || ctx_x100=0
+# Context Window (clamped to 0..10000 hundredths of a percent)
+[[ "$ctx_x100" =~ ^-?[0-9]+$ ]] || ctx_x100=0
 live_x100=$(resolve_live_ctx_x100 "$brain_dir" "$transcript_path" "$ctx_size" "$raw_sid")
 if [[ "${live_x100:-}" =~ ^[0-9]+$ ]] && (( live_x100 > ctx_x100 )); then
   ctx_x100=$live_x100
 fi
+(( ctx_x100 < 0 )) && ctx_x100=0
+(( ctx_x100 > 10000 )) && ctx_x100=10000
 
 ctx_int=$(( (ctx_x100 + 50) / 100 ))
 printf -v ctx_dec '%d.%02d' $(( ctx_x100 / 100 )) $(( ctx_x100 % 100 ))
