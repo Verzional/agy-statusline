@@ -12,7 +12,7 @@ Zero-dependency, sub-5ms statusline for **Antigravity CLI (`agy`)**.
 ### macOS & Linux
 
 ```sh
-curl -fsSL [https://raw.githubusercontent.com/Verzional/agy-statusline/main/install.sh](https://raw.githubusercontent.com/Verzional/agy-statusline/main/install.sh) | sh
+curl -fsSL https://raw.githubusercontent.com/Verzional/agy-statusline/main/install.sh | sh
 ```
 
 Installs to `~/.local/bin/agy-statusline` (override with `INSTALL_DIR=/usr/local/bin`). Re-run anytime to update.
@@ -24,13 +24,13 @@ Download `agy-statusline_v*_windows_amd64.zip` (or `arm64`) from [Releases](http
 ### Go
 
 ```sh
-go install [github.com/Verzional/agy-statusline@latest](https://github.com/Verzional/agy-statusline@latest)
+go install github.com/Verzional/agy-statusline@latest
 ```
 
 ### From Source
 
 ```sh
-git clone [https://github.com/Verzional/agy-statusline.git](https://github.com/Verzional/agy-statusline.git)
+git clone https://github.com/Verzional/agy-statusline.git
 cd agy-statusline && make install
 ```
 
