@@ -70,8 +70,9 @@
     <rect x="685.2" y="162.5" width="2" height="18.0" fill="#303030" />
     <text x="681.1" y="176.0" fill="#10111a" font-weight="700" text-anchor="middle">1</text>
     <text x="689.3" y="176.0" fill="#e0af68" text-anchor="middle">d</text>
-    <text x="697.5" y="176.0" fill="#e0af68" text-anchor="middle">2</text>
-    <text x="705.7" y="176.0" fill="#e0af68" text-anchor="middle">h</text>
+    <text x="697.5" y="176.0" fill="#e0af68" text-anchor="middle">0</text>
+    <text x="705.7" y="176.0" fill="#e0af68" text-anchor="middle">2</text>
+    <text x="713.9" y="176.0" fill="#e0af68" text-anchor="middle">h</text>
     <text x="730.3" y="176.0" fill="#e0af68" text-anchor="middle">]</text>
     <text x="740.4" y="176.0" fill="#e0af68">24.00%</text>
     <text x="802.4" y="176.0" fill="#414868" text-anchor="middle">│</text>

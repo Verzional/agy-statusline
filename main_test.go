@@ -19,9 +19,12 @@ func TestFormatQuotaReset(t *testing.T) {
 		{"expired", map[string]any{"reset_time": time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)}, ""},
 		{"rfc3339_future", map[string]any{"reset_time": time.Now().Add(95*time.Minute + 30*time.Second).UTC().Format(time.RFC3339)}, "1h35m"},
 		{"under_1m", map[string]any{"reset_in_seconds": float64(30)}, "<1m"},
+		{"minutes_padded", map[string]any{"reset_in_seconds": float64(5 * 60)}, "05m"},
 		{"minutes", map[string]any{"reset_in_seconds": float64(42 * 60)}, "42m"},
-		{"hours_exact", map[string]any{"reset_in_seconds": float64(3 * 3600)}, "3h"},
+		{"hours_exact", map[string]any{"reset_in_seconds": float64(3 * 3600)}, "3h00m"},
+		{"hours_mins_padded", map[string]any{"reset_in_seconds": float64(1*3600 + 2*60)}, "1h02m"},
 		{"hours_mins", map[string]any{"reset_in_seconds": float64(3*3600 + 12*60)}, "3h12m"},
+		{"days_hours_padded", map[string]any{"reset_in_seconds": float64(1*86400 + 2*3600)}, "1d02h"},
 		{"days_hours", map[string]any{"reset_in_seconds": float64(4*86400 + 12*3600)}, "4d12h"},
 	}
 
@@ -77,10 +80,10 @@ func TestResolveQuotas(t *testing.T) {
 		wantH5Ok  bool
 		wantH5Rst string
 	}{
-		{"gemini_default", quota, "gemini-4-neon", "Gemini 4 Neon", 90, true, "3d", 75, true, "2h"},
-		{"argon_routing", quota, "gemini-4-argon", "Gemini 4 Argon", 60, true, "5d", 75, true, "2h"},
-		{"claude_routing", quota, "claude-sonnet", "Claude Sonnet 5.5", 45, true, "4d", 20, true, "45m"},
-		{"gpt_routing", quota, "", "GPT-OSS 120B (Medium)", 45, true, "4d", 20, true, "45m"},
+		{"gemini_default", quota, "gemini-4-neon", "Gemini 4 Neon", 90, true, "3d00h", 75, true, "2h00m"},
+		{"argon_routing", quota, "gemini-4-argon", "Gemini 4 Argon", 60, true, "5d00h", 75, true, "2h00m"},
+		{"claude_routing", quota, "claude-sonnet", "Claude Sonnet 5.5", 45, true, "4d00h", 20, true, "45m"},
+		{"gpt_routing", quota, "", "GPT-OSS 120B (Medium)", 45, true, "4d00h", 20, true, "45m"},
 		{"missing_buckets", map[string]any{}, "", "Gemini 4 Neon", 0, false, "", 0, false, ""},
 	}
 

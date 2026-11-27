@@ -96,16 +96,12 @@ func formatQuotaReset(obj map[string]any) string {
 	mins := totalMins % 60
 
 	switch {
-	case days > 0 && hours > 0:
-		return fmt.Sprintf("%dd%dh", days, hours)
 	case days > 0:
-		return fmt.Sprintf("%dd", days)
-	case hours > 0 && mins > 0:
-		return fmt.Sprintf("%dh%dm", hours, mins)
+		return fmt.Sprintf("%dd%02dh", days, hours)
 	case hours > 0:
-		return fmt.Sprintf("%dh", hours)
+		return fmt.Sprintf("%dh%02dm", hours, mins)
 	default:
-		return fmt.Sprintf("%dm", mins)
+		return fmt.Sprintf("%02dm", mins)
 	}
 }
 
