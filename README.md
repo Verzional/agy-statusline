@@ -76,12 +76,12 @@ Start a new `agy` session (or run `/statusline` inside an active session) to ena
 
 ## Telemetry
 
-| Segment                  | Data Source                                    | Behavior                                                             |
-| :----------------------- | :--------------------------------------------- | :------------------------------------------------------------------- |
-| **Session**              | `stdin` payload / `conversation_metadata.json` | Truncated to 18 chars; falls back to 8-char session ID               |
-| **Model & Effort**       | `stdin` payload                                | Strips vendor prefix in split panes; abbreviates effort in sidebars  |
-| **Mode & Status**        | `stdin` payload                                | Color-coded by cycle mode (`Plan`, `Edits`, `Auto`, `Ask`) and state |
-| **Subagents (`Sub`)**    | `stdin` payload                                | Hidden in split panes unless subagents are actively running          |
-| **Tasks (`Task`)**       | `brain/<id>/task.md`                           | Counts `- [x]` / `- [ ]` checkboxes; falls back to `Art N`           |
-| **Quotas (`Wk` / `5h`)** | `stdin` payload                                | Auto-routes Gemini, Argon, Claude, and GPT quota buckets             |
-| **Context (`Ctx`)**      | `transcript.jsonl` / `stdin`                   | Syncs live token usage during turns; surfaces first under 50 cols    |
+| Segment                  | Data Source                                    | Behavior                                                                           |
+| :----------------------- | :--------------------------------------------- | :--------------------------------------------------------------------------------- |
+| **Session**              | `stdin` payload / `conversation_metadata.json` | Truncated to 18 chars; falls back to 8-char session ID                             |
+| **Model & Effort**       | `stdin` payload                                | Strips vendor prefix in split panes; abbreviates effort in sidebars                |
+| **Mode & Status**        | `stdin` payload                                | Color-coded by cycle mode (`Plan`, `Edits`, `Auto`, `Ask`) and state               |
+| **Subagents (`Sub`)**    | `stdin` payload                                | Hidden in split panes unless subagents are actively running                        |
+| **Tasks (`Task`)**       | `brain/<id>/task.md`                           | Counts `- [x]` / `- [ ]` checkboxes; falls back to `Art N`                         |
+| **Quotas (`Wk` / `5h`)** | `stdin` payload                                | Auto-routes Gemini, Argon, Claude, and GPT buckets; overlays reset timers in bars  |
+| **Context (`Ctx`)**      | `transcript.jsonl` / `stdin`                   | Syncs live token usage during turns; default sidebar metric unless a quota is ≤20% |
