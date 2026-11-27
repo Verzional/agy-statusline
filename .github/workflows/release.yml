@@ -6,13 +6,31 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  test:
+    name: Vet & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -v ./...
+
   build:
-    name: Build & Publish (${{ matrix.goos }}/${{ matrix.goarch }})
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: test
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - goos: darwin
@@ -33,7 +51,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version-file: go.mod
 
       - name: Build archive
         env:
@@ -42,9 +60,10 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           TAG="${GITHUB_REF_NAME}"
-          EXT=""
-          [ "$GOOS" = "windows" ] && EXT=".exe"
-          OUT="agy-statusline${EXT}"
+          OUT="agy-statusline"
+          if [ "$GOOS" = "windows" ]; then
+            OUT="agy-statusline.exe"
+          fi
           go build -trimpath -ldflags="-s -w" -o "$OUT" .
           mkdir -p dist
           if [ "$GOOS" = "windows" ]; then
@@ -53,7 +72,32 @@ jobs:
             tar -czf "dist/agy-statusline_${TAG}_${GOOS}_${GOARCH}.tar.gz" "$OUT" README.md
           fi
 
-      - name: Upload release asset
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz *.zip > checksums.txt
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          generate_release_notes: true
