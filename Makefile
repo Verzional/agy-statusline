@@ -1,7 +1,7 @@
 BINARY := agy-statusline
 INSTALL_DIR ?= $(HOME)/.local/bin
 
-.PHONY: build install test clean
+.PHONY: build install test bench clean
 
 build:
 	go build -trimpath -ldflags="-s -w" -o $(BINARY) .
@@ -12,7 +12,11 @@ install: build
 	chmod +x $(INSTALL_DIR)/$(BINARY)
 
 test:
-	go test -v ./...
+	go vet ./...
+	go test -race -v ./...
+
+bench:
+	go test -bench=. -benchmem ./...
 
 clean:
 	rm -f $(BINARY)
